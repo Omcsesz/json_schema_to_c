@@ -29,7 +29,7 @@ from .code_block_printer import CodeBlockPrinter
 
 from .generator_factory import GeneratorFactory
 from .type_cache import TypeCache
-from .base import GeneratorInitParameters
+from .base import GeneratorInitParameters, SchemaError
 
 
 DIR_OF_THIS_FILE = os.path.dirname(__file__)
@@ -43,9 +43,14 @@ NOTE_FOR_GENERATED_FILES = """
 class RootGenerator:
     def __init__(self, schema, settings):
         self.settings = settings
+        self.path_in_schema = ''
+        if '$id' not in schema:
+            raise SchemaError(self, "All schemas must have an ID (a field named '$id')")
         self.root_generator = GeneratorFactory.get_generator_for(
+            self,
             schema,
             GeneratorInitParameters(
+                '',
                 schema['$id'],
                 schema['$id'] + '_t',
                 settings,
@@ -61,11 +66,9 @@ class RootGenerator:
             out_file.print("parse_state_t parse_state_var;")
             out_file.print("parse_state_t *parse_state = &parse_state_var;")
             out_file.print("jsmntok_t token_buffer[{}];".format(max_token_num))
-            out_file.print(
-                "if (builtin_parse_json_string(parse_state, token_buffer, {}, json_string))"
+            parser_call = "builtin_parse_json_string(parse_state, token_buffer, {}, json_string)" \
                 .format(max_token_num)
-            )
-            with out_file.code_block():
+            with out_file.if_block(parser_call):
                 out_file.print("return true;")
             self.root_generator.generate_parser_call(
                 "out",
@@ -112,7 +115,7 @@ class RootGenerator:
 
     @classmethod
     def manually_include_jsmn(cls, c_file):
-        with open(os.path.join(DIR_OF_THIS_FILE, '..', '..', 'jsmn', 'jsmn.h')) as jsmn_h:
+        with open(os.path.join(DIR_OF_THIS_FILE, '..', '..', 'jsmn', 'jsmn.h'), encoding='utf-8') as jsmn_h:
             c_file.print("")
             c_file.print_separator("jsmn.h (From https://github.com/zserge/jsmn)")
             c_file.write(jsmn_h.read())
@@ -121,7 +124,7 @@ class RootGenerator:
 
     @classmethod
     def manually_include_builtins(cls, c_file):
-        with open(os.path.join(DIR_OF_THIS_FILE, 'js2c_builtins.h')) as builtins_file:
+        with open(os.path.join(DIR_OF_THIS_FILE, 'js2c_builtins.h'), encoding='utf-8') as builtins_file:
             c_file.print_separator("js2c_builtins.h")
             builtins_file_contents = builtins_file.read()
             jsmn_include_string = '#include "jsmn.h"\n'

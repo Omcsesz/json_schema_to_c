@@ -24,7 +24,7 @@
 #
 from abc import abstractmethod
 
-from .base import Generator, CType
+from .base import Generator, CType, SchemaError
 
 
 class IntegerType(CType):
@@ -32,9 +32,9 @@ class IntegerType(CType):
     SIGNED_TYPES = ["int64_t", "int32_t", "int16_t", "int8_t"]
     UNSIGNED_TYPES = ["uint64_t", "uint32_t", "uint16_t", "uint8_t"]
 
-    def __init__(self, type_name, description):
+    def __init__(self, generator, type_name, description):
         if type_name not in self.SIGNED_TYPES + self.UNSIGNED_TYPES:
-            raise ValueError("Unsupported integer type: {}".format(type_name))
+            raise SchemaError(generator, "Unsupported integer type: {}".format(type_name))
         super().__init__(type_name, description)
 
     def is_unsigned(self):
@@ -66,7 +66,7 @@ class IntegerGeneratorBase(Generator):
             else:
                 c_type_name = "int64_t"
 
-        self.c_type = IntegerType(c_type_name, self.description)
+        self.c_type = IntegerType(self, c_type_name, self.description)
         if self.c_type.is_unsigned():
             self.parser_fn = "builtin_parse_unsigned"
             self.parsed_type = "uint64_t"
@@ -96,8 +96,7 @@ class IntegerGeneratorBase(Generator):
         # pylint: disable=too-many-arguments
         if check_number is None:
             return
-        out_file.print("if (!(int_parse_tmp {} {}))".format(check_operator, check_number))
-        with out_file.code_block():
+        with out_file.if_block("!(int_parse_tmp {} {})".format(check_operator, check_number)):
             # Roll back the token, as the value was not actually correct
             out_file.print("parse_state->current_token -= 1;")
             cls.generate_logged_error(
@@ -112,16 +111,13 @@ class IntegerGeneratorBase(Generator):
 
     def generate_parser_call(self, out_var_name, out_file):
         out_file.print("{} int_parse_tmp;".format(self.parsed_type))
-        out_file.print(
-            "if ({}(parse_state, {}, {}, {}, &int_parse_tmp))"
-            .format(
-                self.parser_fn,
-                'true' if self.number_allowed else 'false',
-                'true' if self.string_allowed else 'false',
-                self.radix
-            )
+        parser_call = "{}(parse_state, {}, {}, {}, &int_parse_tmp)".format(
+            self.parser_fn,
+            'true' if self.number_allowed else 'false',
+            'true' if self.string_allowed else 'false',
+            self.radix
         )
-        with out_file.code_block():
+        with out_file.if_block(parser_call):
             out_file.print("return true;")
         self.generate_range_check(self.minimum, self.parsed_type_printf_macro, ">=", out_file)
         self.generate_range_check(self.maximum, self.parsed_type_printf_macro, "<=", out_file)
@@ -185,7 +181,8 @@ class NumericStringGenerator(IntegerGenerator):
 
         if self.pattern not in pattern_set:
             valid_patterns = ", ".join('"{}"'.format(p) for p in pattern_set)
-            raise ValueError(
+            raise SchemaError(
+                self,
                 'Pattern "{}" is not a valid pattern for this value range. Valid patterns are: {}'
                 .format(self.pattern, valid_patterns)
             )

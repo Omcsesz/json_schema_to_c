@@ -24,7 +24,7 @@
 #
 import collections
 
-from .base import Generator, CType
+from .base import Generator, CType, SchemaError
 
 
 class ObjectType(CType):
@@ -66,10 +66,13 @@ class ObjectGenerator(Generator):
     def __init__(self, schema, parameters):
         super().__init__(schema, parameters)
         self.fields = collections.OrderedDict()
+        if 'properties' not in schema:
+            raise SchemaError(self, "Missing field for object declaration: 'properties'")
         for field_name, field_schema in schema['properties'].items():
             self.fields[field_name] = parameters.generator_factory.get_generator_for(
+                self,
                 field_schema,
-                parameters.with_suffix(self.type_name, field_name),
+                parameters.with_suffix("properties." + field_name, self.type_name, field_name),
             )
         self.c_type = ObjectType(
             self.type_name,
@@ -79,9 +82,10 @@ class ObjectGenerator(Generator):
         self.c_type = parameters.type_cache.try_get_cached(self.c_type)
 
         if self.additionalProperties and not self.settings.allow_additional_properties:
-            raise ValueError(
-                "Either use the --allow-additional-properties command line argument, or set "
-                "additionalProperties to false on all object types."
+            raise SchemaError(
+                self,
+                "Either set 'additionalProperties' to false or  use the "
+                "--allow-additional-properties command line argument for generation."
             )
 
     @classmethod
@@ -89,11 +93,8 @@ class ObjectGenerator(Generator):
         return schema.get('type') == 'object'
 
     def generate_parser_call(self, out_var_name, out_file):
-        out_file.print(
-            "if (parse_{}(parse_state, {}))"
-            .format(self.parser_name, out_var_name)
-        )
-        with out_file.code_block():
+        parser_call = "parse_{}(parse_state, {})".format(self.parser_name, out_var_name)
+        with out_file.if_block(parser_call):
             out_file.print("return true;")
 
     def generate_seen_flags(self, out_file):
@@ -104,8 +105,7 @@ class ObjectGenerator(Generator):
         for field_name, field_generator in self.fields.items():
             if not field_generator.has_default_value():
                 continue
-            out_file.print("if (!seen_{})".format(field_name))
-            with out_file.code_block():
+            with out_file.if_block("!seen_{}".format(field_name)):
                 field_generator.generate_set_default_value(
                     "out->{}".format(field_name),
                     out_file
@@ -116,17 +116,16 @@ class ObjectGenerator(Generator):
             if field_generator.has_default_value():
                 continue
             if field_name not in self.required:
-                raise ValueError(
-                    "All fields must either be required or have a default value ({})"
+                raise SchemaError(
+                    self,
+                    "Field '{}' must be required or have a default value"
                     .format(field_name)
                 )
-            out_file.print("if (!seen_{})".format(field_name))
-            with out_file.code_block():
+            with out_file.if_block("!seen_{}".format(field_name)):
                 self.generate_logged_error("Missing required field in '%s': {}".format(field_name), out_file)
 
     def generate_key_children_check(self, out_file):
-        out_file.print("if (CURRENT_TOKEN(parse_state).size > 1)")
-        with out_file.code_block():
+        with out_file.if_block("CURRENT_TOKEN(parse_state).size > 1"):
             self.generate_logged_error(
                 [
                     "Missing separator between values in '%s', after key: %.*s",
@@ -136,8 +135,7 @@ class ObjectGenerator(Generator):
                 out_file
             )
 
-        out_file.print("if (CURRENT_TOKEN(parse_state).size < 1)")
-        with out_file.code_block():
+        with out_file.if_block("CURRENT_TOKEN(parse_state).size < 1"):
             self.generate_logged_error(
                 [
                     "Missing value in '%s', after key: %.*s",
@@ -150,10 +148,8 @@ class ObjectGenerator(Generator):
     def generate_field_parsers(self, out_file):
         self.generate_key_children_check(out_file)
         for field_name, field_generator in self.fields.items():
-            out_file.print('if (current_string_is(parse_state, "{}"))'.format(field_name))
-            with out_file.code_block():
-                out_file.print("if (seen_{})".format(field_name))
-                with out_file.code_block():
+            with out_file.if_block('current_string_is(parse_state, "{}")'.format(field_name)):
+                with out_file.if_block("seen_{}".format(field_name)):
                     self.generate_logged_error("Duplicate field definition in '%s': {}".format(field_name), out_file)
                 out_file.print("seen_{} = true;".format(field_name))
                 out_file.print("parse_state->current_token += 1;")
@@ -178,8 +174,7 @@ class ObjectGenerator(Generator):
 
         out_file.print("static bool parse_{}(parse_state_t *parse_state, {} *out)".format(self.parser_name, self.c_type))
         with out_file.code_block():
-            out_file.print("if (check_type(parse_state, JSMN_OBJECT))")
-            with out_file.code_block():
+            with out_file.if_block("check_type(parse_state, JSMN_OBJECT)"):
                 out_file.print("return true;")
 
             self.generate_seen_flags(out_file)
@@ -187,8 +182,7 @@ class ObjectGenerator(Generator):
             out_file.print("const int object_start_token = parse_state->current_token;")
             out_file.print("const uint64_t n = parse_state->tokens[parse_state->current_token].size;")
             out_file.print("parse_state->current_token += 1;")
-            out_file.print("for (uint64_t i = 0; i < n; ++i)")
-            with out_file.code_block():
+            with out_file.for_block("uint64_t i = 0; i < n; ++i"):
                 self.generate_field_parsers(out_file)
 
             # This little magic is needed because both required checks and default setting
