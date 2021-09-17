@@ -85,7 +85,7 @@ The following extra features are implemented:
 Contribution
 ------------
 
-I love to receive pull requests, especially if it's a bugifx or a nice feature, and `make check` was successful on it.
+I love to receive pull requests, especially if it's a bugfix or a nice feature, and `make check` was successful on it.
 
 Thanks
 ------
